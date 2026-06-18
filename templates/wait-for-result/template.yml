@@ -1,0 +1,103 @@
+# GitLab CI/CD Component: wait-for-result
+# Polls a Brotni simulation job until it completes and exposes the outcome
+# (status, score, report URL) as dotenv artifacts for downstream jobs.
+#
+# Usage in .gitlab-ci.yml:
+#   include:
+#     - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/wait-for-result@~latest
+
+spec:
+  inputs:
+    brotni_api_url:
+      description: "Base URL of the Brotni API (e.g. https://api.brotni.example.com)"
+      default: "$BROTNI_API_URL"
+
+    brotni_token_variable:
+      description: "Name of the CI variable containing the Brotni API token"
+      default: "BROTNI_TOKEN"
+
+    simulation_job_id:
+      description: "ID of the Brotni simulation job to wait for (from submit-candidate output)"
+      default: "$BROTNI_SIMULATION_JOB_ID"
+
+    poll_interval_seconds:
+      description: "Seconds between status polls"
+      default: "30"
+
+    timeout_minutes:
+      description: "Maximum minutes to wait before failing"
+      default: "60"
+
+    brotni_cli_image:
+      description: "Docker image that provides brotni-cli"
+      default: "ghcr.io/brotni/brotni-cli:latest"
+
+---
+
+wait-for-result:
+  image: $[[ inputs.brotni_cli_image ]]
+  stage: .post
+  variables:
+    BROTNI_API_URL: $[[ inputs.brotni_api_url ]]
+    _BROTNI_TOKEN_VAR: $[[ inputs.brotni_token_variable ]]
+    SIMULATION_JOB_ID: $[[ inputs.simulation_job_id ]]
+    POLL_INTERVAL: $[[ inputs.poll_interval_seconds ]]
+    TIMEOUT_MINUTES: $[[ inputs.timeout_minutes ]]
+  script:
+    - set -euo pipefail
+    - BROTNI_TOKEN=$(eval "echo \$$_BROTNI_TOKEN_VAR")
+    - |
+      if [ -z "$BROTNI_TOKEN" ]; then
+        echo "ERROR: Variable $_BROTNI_TOKEN_VAR is not set or is empty." >&2
+        exit 1
+      fi
+    - |
+      if [ -z "$SIMULATION_JOB_ID" ]; then
+        echo "ERROR: simulation_job_id is not set. Ensure submit-candidate ran first." >&2
+        exit 1
+      fi
+    - TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
+    - ELAPSED=0
+    - echo "Polling simulation job $SIMULATION_JOB_ID (timeout ${TIMEOUT_MINUTES}m, interval ${POLL_INTERVAL}s)..."
+    - |
+      while true; do
+        RESULT=$(BROTNI_TOKEN="$BROTNI_TOKEN" brotni-cli status \
+          --api-url "$BROTNI_API_URL" \
+          --job-id  "$SIMULATION_JOB_ID" \
+          --output  json)
+        STATUS=$(echo "$RESULT" | brotni-cli parse --field status)
+        echo "Status: $STATUS (elapsed: ${ELAPSED}s)"
+        case "$STATUS" in
+          completed|passed)
+            SCORE=$(echo "$RESULT" | brotni-cli parse --field score)
+            REPORT_URL=$(echo "$RESULT" | brotni-cli parse --field report_url)
+            echo "Simulation completed. Score: $SCORE  Report: $REPORT_URL"
+            printf "BROTNI_STATUS=%s\nBROTNI_SCORE=%s\nBROTNI_REPORT_URL=%s\n" \
+              "$STATUS" "$SCORE" "$REPORT_URL" >> brotni-result.env
+            exit 0
+            ;;
+          failed|error)
+            echo "ERROR: Simulation failed with status: $STATUS" >&2
+            printf "BROTNI_STATUS=%s\n" "$STATUS" >> brotni-result.env
+            exit 1
+            ;;
+          pending|running|queued)
+            ;;
+          *)
+            echo "WARNING: Unknown status '$STATUS'. Continuing to poll..."
+            ;;
+        esac
+        if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+          echo "ERROR: Timed out after ${TIMEOUT_MINUTES} minutes." >&2
+          printf "BROTNI_STATUS=timeout\n" >> brotni-result.env
+          exit 1
+        fi
+        sleep "$POLL_INTERVAL"
+        ELAPSED=$((ELAPSED + POLL_INTERVAL))
+      done
+  artifacts:
+    reports:
+      dotenv: brotni-result.env
+    expire_in: 1 week
+  rules:
+    - when: always

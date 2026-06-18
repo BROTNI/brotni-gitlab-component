@@ -1,0 +1,129 @@
+# GitLab CI/CD Component: submit-candidate
+# Submits a GitLab merge request, commit, or OCI artifact as a simulation candidate
+# to a Brotni-compatible simulation workflow via brotni-cli.
+#
+# Usage in .gitlab-ci.yml:
+#   include:
+#     - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/submit-candidate@~latest
+
+spec:
+  inputs:
+    # Required: URL of the Brotni API endpoint
+    brotni_api_url:
+      description: "Base URL of the Brotni API (e.g. https://api.brotni.example.com)"
+      default: "$BROTNI_API_URL"
+
+    # Name of the CI variable that holds the Brotni API token.
+    # The variable itself is resolved at runtime; its value is never logged.
+    brotni_token_variable:
+      description: "Name of the CI variable containing the Brotni API token"
+      default: "BROTNI_TOKEN"
+
+    # Simulation configuration inputs
+    simulation_spec:
+      description: "Path or URL to the simulation specification file"
+      default: ""
+
+    execution_recipe:
+      description: "Path or URL to the execution recipe file"
+      default: ""
+
+    context_spec:
+      description: "Path or URL to the context specification file"
+      default: ""
+
+    # OCI artifact inputs (optional — use for artifact-based candidates)
+    artifact_uri:
+      description: "OCI artifact URI (e.g. registry.example.com/myimage)"
+      default: ""
+
+    artifact_digest:
+      description: "OCI artifact digest (sha256:...)"
+      default: ""
+
+    # Candidate metadata
+    candidate_name:
+      description: "Human-readable name for this simulation candidate"
+      default: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
+
+    campaign_id:
+      description: "Brotni campaign ID to associate this candidate with"
+      default: ""
+
+    # Behaviour flags
+    wait:
+      description: "Whether to wait for simulation completion (true/false)"
+      default: "false"
+
+    publish_status:
+      description: "Whether to publish simulation status back to the MR (true/false)"
+      default: "true"
+
+    # Docker image used to run brotni-cli
+    brotni_cli_image:
+      description: "Docker image that provides brotni-cli"
+      default: "ghcr.io/brotni/brotni-cli:latest"
+
+---
+
+submit-candidate:
+  image: $[[ inputs.brotni_cli_image ]]
+  stage: .pre
+  variables:
+    BROTNI_API_URL: $[[ inputs.brotni_api_url ]]
+    _BROTNI_TOKEN_VAR: $[[ inputs.brotni_token_variable ]]
+    CANDIDATE_NAME: $[[ inputs.candidate_name ]]
+    CAMPAIGN_ID: $[[ inputs.campaign_id ]]
+    SIMULATION_SPEC: $[[ inputs.simulation_spec ]]
+    EXECUTION_RECIPE: $[[ inputs.execution_recipe ]]
+    CONTEXT_SPEC: $[[ inputs.context_spec ]]
+    ARTIFACT_URI: $[[ inputs.artifact_uri ]]
+    ARTIFACT_DIGEST: $[[ inputs.artifact_digest ]]
+    WAIT_FOR_RESULT: $[[ inputs.wait ]]
+    PUBLISH_STATUS: $[[ inputs.publish_status ]]
+  script:
+    - |
+      set -euo pipefail
+
+      # Resolve the token from the named variable — never echo the token value.
+      BROTNI_TOKEN="${!_BROTNI_TOKEN_VAR:-}"
+      if [ -z "$BROTNI_TOKEN" ]; then
+        echo "ERROR: Variable '$_BROTNI_TOKEN_VAR' is not set or is empty." >&2
+        exit 1
+      fi
+
+      # Build brotni-cli arguments
+      ARGS=(
+        submit
+        --api-url    "$BROTNI_API_URL"
+        --name       "$CANDIDATE_NAME"
+        --source-url "$CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA"
+      )
+
+      [ -n "$SIMULATION_SPEC"  ] && ARGS+=(--simulation-spec  "$SIMULATION_SPEC")
+      [ -n "$EXECUTION_RECIPE" ] && ARGS+=(--execution-recipe "$EXECUTION_RECIPE")
+      [ -n "$CONTEXT_SPEC"     ] && ARGS+=(--context-spec     "$CONTEXT_SPEC")
+      [ -n "$ARTIFACT_URI"     ] && ARGS+=(--artifact-uri     "$ARTIFACT_URI")
+      [ -n "$ARTIFACT_DIGEST"  ] && ARGS+=(--artifact-digest  "$ARTIFACT_DIGEST")
+      [ -n "$CAMPAIGN_ID"      ] && ARGS+=(--campaign-id      "$CAMPAIGN_ID")
+
+      # Attach GitLab merge request context when available
+      if [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
+        ARGS+=(
+          --mr-iid      "$CI_MERGE_REQUEST_IID"
+          --mr-url      "$CI_PROJECT_URL/-/merge_requests/$CI_MERGE_REQUEST_IID"
+        )
+      fi
+
+      [ "$WAIT_FOR_RESULT" = "true" ] && ARGS+=(--wait)
+
+      # Submit the candidate — token passed via env var, never via CLI argument
+      BROTNI_TOKEN="$BROTNI_TOKEN" brotni-cli "${ARGS[@]}"
+
+      echo "BROTNI_CANDIDATE_SUBMITTED=true" >> brotni.env
+  artifacts:
+    reports:
+      dotenv: brotni.env
+    expire_in: 1 week
+  rules:
+    - when: always

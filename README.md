@@ -120,6 +120,7 @@ On completion, the following variables are available via dotenv artifacts:
 | `BROTNI_STATUS` | `completed`, `passed`, `failed`, `error`, or `timeout` |
 | `BROTNI_SCORE` | Numeric score from the simulation |
 | `BROTNI_REPORT_URL` | URL to the full simulation report |
+| `BROTNI_CAMPAIGN_URL` | URL to the campaign comparison view, when the candidate belongs to a campaign |
 
 See [`examples/wait-for-result.gitlab-ci.yml`](examples/wait-for-result.gitlab-ci.yml) for a complete example.
 

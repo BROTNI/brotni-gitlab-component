@@ -71,9 +71,11 @@ wait-for-result:
           completed|passed)
             SCORE=$(echo "$RESULT" | brotni-cli parse --field score)
             REPORT_URL=$(echo "$RESULT" | brotni-cli parse --field report_url)
+            CAMPAIGN_URL=$(echo "$RESULT" | brotni-cli parse --field campaign_url || true)
             echo "Simulation completed. Score: $SCORE  Report: $REPORT_URL"
-            printf "BROTNI_STATUS=%s\nBROTNI_SCORE=%s\nBROTNI_REPORT_URL=%s\n" \
-              "$STATUS" "$SCORE" "$REPORT_URL" >> brotni-result.env
+            [ -n "$CAMPAIGN_URL" ] && echo "Campaign comparison: $CAMPAIGN_URL"
+            printf "BROTNI_STATUS=%s\nBROTNI_SCORE=%s\nBROTNI_REPORT_URL=%s\nBROTNI_CAMPAIGN_URL=%s\n" \
+              "$STATUS" "$SCORE" "$REPORT_URL" "$CAMPAIGN_URL" >> brotni-result.env
             exit 0
             ;;
           failed|error)

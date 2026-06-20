@@ -50,6 +50,14 @@ spec:
       description: "Brotni campaign ID to associate this candidate with"
       default: ""
 
+    work_item:
+      description: "Work item this candidate contributes to (issue/ticket number or URL), used for campaign discovery"
+      default: ""
+
+    source_kind:
+      description: "Candidate source kind: git_change, container_image, or config_bundle (inferred when empty)"
+      default: ""
+
     # Behaviour flags
     wait:
       description: "Whether to wait for simulation completion (true/false)"
@@ -74,6 +82,8 @@ submit-candidate:
     _BROTNI_TOKEN_VAR: $[[ inputs.brotni_token_variable ]]
     CANDIDATE_NAME: $[[ inputs.candidate_name ]]
     CAMPAIGN_ID: $[[ inputs.campaign_id ]]
+    WORK_ITEM: $[[ inputs.work_item ]]
+    SOURCE_KIND: $[[ inputs.source_kind ]]
     SIMULATION_SPEC: $[[ inputs.simulation_spec ]]
     EXECUTION_RECIPE: $[[ inputs.execution_recipe ]]
     CONTEXT_SPEC: $[[ inputs.context_spec ]]
@@ -106,6 +116,8 @@ submit-candidate:
       [ -n "$ARTIFACT_URI"     ] && ARGS+=(--artifact-uri     "$ARTIFACT_URI")
       [ -n "$ARTIFACT_DIGEST"  ] && ARGS+=(--artifact-digest  "$ARTIFACT_DIGEST")
       [ -n "$CAMPAIGN_ID"      ] && ARGS+=(--campaign-id      "$CAMPAIGN_ID")
+      [ -n "$WORK_ITEM"        ] && ARGS+=(--work-item        "$WORK_ITEM")
+      [ -n "$SOURCE_KIND"      ] && ARGS+=(--source-kind      "$SOURCE_KIND")
 
       # Attach GitLab merge request context when available
       if [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
@@ -117,10 +129,17 @@ submit-candidate:
 
       [ "$WAIT_FOR_RESULT" = "true" ] && ARGS+=(--wait)
 
+      # Delegate MR status publishing to brotni-cli, keeping the component thin.
+      # The CLI posts an external/commit status back to the merge request.
+      [ "$PUBLISH_STATUS" = "true" ] && ARGS+=(--publish-status)
+
       # Submit the candidate — token passed via env var, never via CLI argument
       BROTNI_TOKEN="$BROTNI_TOKEN" brotni-cli "${ARGS[@]}"
 
-      echo "BROTNI_CANDIDATE_SUBMITTED=true" >> brotni.env
+      {
+        echo "BROTNI_CANDIDATE_SUBMITTED=true"
+        [ -n "$CAMPAIGN_ID" ] && echo "BROTNI_CAMPAIGN_ID=$CAMPAIGN_ID"
+      } >> brotni.env
   artifacts:
     reports:
       dotenv: brotni.env

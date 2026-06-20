@@ -2,18 +2,20 @@
 
 A reusable [GitLab CI/CD Component](https://docs.gitlab.com/ee/ci/components/) for integrating GitLab merge requests, commits, and OCI artifact candidates with Brotni-compatible simulation workflows.
 
-**This component does not run simulations itself. It submits GitLab candidates to a Brotni-compatible simulation workflow and exposes the resulting status in CI.**
+**This component does not run simulations itself. It registers GitLab candidates in an existing Brotni simulation campaign and reports the campaign decision in CI.**
 
 ---
 
 ## What this component does
 
-- Collects GitLab CI metadata (project, commit, merge request) and submits it as a simulation candidate to a Brotni-compatible API via `brotni-cli`.
-- Accepts simulation configuration inputs: simulation spec, execution recipe, context spec, and OCI artifact references.
-- Optionally waits for simulation completion and exposes `BROTNI_STATUS`, `BROTNI_SCORE`, and `BROTNI_REPORT_URL` as CI/CD variables for downstream jobs.
-- Publishes simulation status back to the GitLab merge request when enabled.
+- Collects GitLab CI metadata (project, commit, merge request) and registers it as a candidate in an existing Brotni **campaign** via `brotni campaign add-candidate`.
+- Accepts an execution recipe and OCI artifact references; registration is **idempotent** by candidate name (`mr-<iid>`), so re-runs on later pushes update the candidate instead of duplicating it.
+- Exposes `BROTNI_CAMPAIGN_ID` and `BROTNI_CANDIDATE_ID` as dotenv artifacts for downstream jobs.
+- Provides a best-effort, non-blocking `wait-for-result` job that reports the current campaign decision.
 
 The component is designed to be thin and auditable. All integration logic lives in `brotni-cli`; the component's YAML is only orchestration glue.
+
+> Create the campaign first (e.g. `brotni campaign create --manifest .brotni/simulation.yaml`) and pass its ID as `campaign_id`. There is no non-campaign candidate in the model, so `campaign_id` is required.
 
 ---
 
@@ -40,17 +42,15 @@ include:
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
-      execution_recipe: "simulation/recipe.yaml"
-      candidate_name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
       campaign_id: "$BROTNI_CAMPAIGN_ID"
+      execution_recipe: "simulation/recipe.yaml"
 ```
 
 ---
 
-### Submit a merge request candidate
+### Register a merge request candidate
 
-Use `submit-candidate` in your pipeline to automatically submit the current MR commit to the Brotni simulation workflow:
+Use `submit-candidate` to register the current MR commit as a candidate in the campaign:
 
 ```yaml
 include:
@@ -58,21 +58,19 @@ include:
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
+      campaign_id: "$BROTNI_CAMPAIGN_ID"
       execution_recipe: "simulation/recipe.yaml"
-      candidate_name: "$CI_PROJECT_NAME-mr-$CI_MERGE_REQUEST_IID"
-      publish_status: "true"
 ```
 
-The `submit-candidate` job runs in the `.pre` stage automatically. It exposes `BROTNI_SIMULATION_JOB_ID` as a dotenv artifact for use by `wait-for-result`.
+The `submit-candidate` job runs in the `.pre` stage automatically. On MR pipelines the candidate is named `mr-<iid>` (idempotent re-registration). It exposes `BROTNI_CAMPAIGN_ID` and `BROTNI_CANDIDATE_ID` as dotenv artifacts.
 
 See [`examples/basic-mr.gitlab-ci.yml`](examples/basic-mr.gitlab-ci.yml) for a complete example.
 
 ---
 
-### Submit an OCI image artifact
+### Register an OCI image artifact
 
-To submit a built container image as the simulation candidate, provide the `artifact_uri` and `artifact_digest` inputs:
+To register a built container image (pinned by digest), provide `artifact_uri` and `artifact_digest`:
 
 ```yaml
 include:
@@ -80,10 +78,10 @@ include:
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
+      campaign_id: "$BROTNI_CAMPAIGN_ID"
       artifact_uri: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
       artifact_digest: "$BROTNI_ARTIFACT_DIGEST"
-      candidate_name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
+      source_kind: "container_image"
 ```
 
 Capture the image digest in a `build` job using `docker inspect` or `crane digest`, then pass it via `BROTNI_ARTIFACT_DIGEST` in a dotenv artifact.
@@ -92,9 +90,9 @@ See [`examples/oci-artifact.gitlab-ci.yml`](examples/oci-artifact.gitlab-ci.yml)
 
 ---
 
-### Wait for simulation results
+### Report the campaign decision
 
-Include `wait-for-result` after `submit-candidate` to block the pipeline until the simulation completes:
+Include `wait-for-result` after `submit-candidate` for a best-effort, non-blocking report of the campaign decision. There is no per-candidate job to poll — scoring is comparative and only exists once the studio has run the candidates and ingested metrics:
 
 ```yaml
 include:
@@ -102,25 +100,16 @@ include:
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
+      campaign_id: "$BROTNI_CAMPAIGN_ID"
 
   - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/wait-for-result@~latest
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_job_id: "$BROTNI_SIMULATION_JOB_ID"
-      poll_interval_seconds: "30"
-      timeout_minutes: "90"
+      campaign_id: "$BROTNI_CAMPAIGN_ID"
 ```
 
-On completion, the following variables are available via dotenv artifacts:
-
-| Variable | Description |
-|----------|-------------|
-| `BROTNI_STATUS` | `completed`, `passed`, `failed`, `error`, or `timeout` |
-| `BROTNI_SCORE` | Numeric score from the simulation |
-| `BROTNI_REPORT_URL` | URL to the full simulation report |
-| `BROTNI_CAMPAIGN_URL` | URL to the campaign comparison view, when the candidate belongs to a campaign |
+`wait-for-result` prints the current campaign decision and exposes `BROTNI_CAMPAIGN_ID` as a dotenv artifact.
 
 See [`examples/wait-for-result.gitlab-ci.yml`](examples/wait-for-result.gitlab-ci.yml) for a complete example.
 
@@ -134,7 +123,7 @@ Set these at the project or group level in **Settings > CI/CD > Variables**:
 |----------|----------|-------------|----------------------|
 | `BROTNI_API_URL` | Yes | Base URL of the Brotni API | Not masked (not a secret) |
 | `BROTNI_TOKEN` | Yes | API authentication token | **Masked and Protected** |
-| `BROTNI_CAMPAIGN_ID` | No | Default campaign ID | Plain |
+| `BROTNI_CAMPAIGN_ID` | Yes | Campaign ID to register candidates with | Plain |
 
 ---
 
@@ -155,10 +144,10 @@ See [`docs/security.md`](docs/security.md) for full security guidance.
 
 `brotni-cli` is the command-line tool that handles the actual communication with the Brotni API. This component is a GitLab CI/CD wrapper around `brotni-cli` that:
 
-1. Collects GitLab CI context (commit SHA, MR IID, project URL, etc.).
-2. Constructs the correct `brotni-cli submit` arguments.
+1. Collects GitLab CI context (commit SHA, MR IID, project path, etc.).
+2. Constructs the correct `brotni campaign add-candidate` arguments.
 3. Passes the API token securely via environment variable.
-4. Exposes results as GitLab CI dotenv artifacts.
+4. Exposes the campaign and candidate IDs as GitLab CI dotenv artifacts.
 
 The component does not duplicate `brotni-cli`'s integration logic. Keeping the component thin means that improvements to `brotni-cli` are immediately available without updating the component templates.
 

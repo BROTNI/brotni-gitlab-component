@@ -1,10 +1,13 @@
 # GitLab CI/CD Component: submit-candidate
-# Submits a GitLab merge request, commit, or OCI artifact as a simulation candidate
-# to a Brotni-compatible simulation workflow via brotni-cli.
+# Registers a GitLab merge request, commit, or OCI artifact as a candidate in an
+# existing Brotni simulation campaign, via `brotni campaign add-candidate`.
+# Registration is idempotent by candidate name.
 #
 # Usage in .gitlab-ci.yml:
 #   include:
 #     - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/submit-candidate@~latest
+#       inputs:
+#         campaign_id: "$BROTNI_CAMPAIGN_ID"
 
 spec:
   inputs:
@@ -19,17 +22,14 @@ spec:
       description: "Name of the CI variable containing the Brotni API token"
       default: "BROTNI_TOKEN"
 
-    # Simulation configuration inputs
-    simulation_spec:
-      description: "Path or URL to the simulation specification file"
+    # Required: the campaign to register this candidate with.
+    campaign_id:
+      description: "Brotni campaign ID to register this candidate with (required)"
       default: ""
 
+    # Recipe describing how this candidate runs.
     execution_recipe:
       description: "Path or URL to the execution recipe file"
-      default: ""
-
-    context_spec:
-      description: "Path or URL to the context specification file"
       default: ""
 
     # OCI artifact inputs (optional — use for artifact-based candidates)
@@ -41,31 +41,16 @@ spec:
       description: "OCI artifact digest (sha256:...)"
       default: ""
 
-    # Candidate metadata
+    # Stable candidate name. Defaults to mr-<iid> on merge request pipelines (so
+    # re-runs upsert instead of duplicating); falls back to the project + short
+    # SHA otherwise.
     candidate_name:
-      description: "Human-readable name for this simulation candidate"
-      default: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
-
-    campaign_id:
-      description: "Brotni campaign ID to associate this candidate with"
-      default: ""
-
-    work_item:
-      description: "Work item this candidate contributes to (issue/ticket number or URL), used for campaign discovery"
+      description: "Stable candidate name (defaults to mr-<iid> or project-<short sha>)"
       default: ""
 
     source_kind:
       description: "Candidate source kind: git_change, container_image, or config_bundle (inferred when empty)"
       default: ""
-
-    # Behaviour flags
-    wait:
-      description: "Whether to wait for simulation completion (true/false)"
-      default: "false"
-
-    publish_status:
-      description: "Whether to publish simulation status back to the MR (true/false)"
-      default: "true"
 
     # Docker image used to run brotni-cli
     brotni_cli_image:
@@ -80,20 +65,20 @@ submit-candidate:
   variables:
     BROTNI_API_URL: $[[ inputs.brotni_api_url ]]
     _BROTNI_TOKEN_VAR: $[[ inputs.brotni_token_variable ]]
-    CANDIDATE_NAME: $[[ inputs.candidate_name ]]
     CAMPAIGN_ID: $[[ inputs.campaign_id ]]
-    WORK_ITEM: $[[ inputs.work_item ]]
-    SOURCE_KIND: $[[ inputs.source_kind ]]
-    SIMULATION_SPEC: $[[ inputs.simulation_spec ]]
+    CANDIDATE_NAME: $[[ inputs.candidate_name ]]
     EXECUTION_RECIPE: $[[ inputs.execution_recipe ]]
-    CONTEXT_SPEC: $[[ inputs.context_spec ]]
     ARTIFACT_URI: $[[ inputs.artifact_uri ]]
     ARTIFACT_DIGEST: $[[ inputs.artifact_digest ]]
-    WAIT_FOR_RESULT: $[[ inputs.wait ]]
-    PUBLISH_STATUS: $[[ inputs.publish_status ]]
+    SOURCE_KIND: $[[ inputs.source_kind ]]
   script:
     - |
       set -euo pipefail
+
+      if [ -z "$CAMPAIGN_ID" ]; then
+        echo "ERROR: campaign_id is required — register candidates in an existing campaign." >&2
+        exit 1
+      fi
 
       # Resolve the token from the named variable — never echo the token value.
       BROTNI_TOKEN="${!_BROTNI_TOKEN_VAR:-}"
@@ -102,43 +87,41 @@ submit-candidate:
         exit 1
       fi
 
-      # Build brotni-cli arguments
-      ARGS=(
-        submit
-        --api-url    "$BROTNI_API_URL"
-        --name       "$CANDIDATE_NAME"
-        --source-url "$CI_PROJECT_URL/-/commit/$CI_COMMIT_SHA"
-      )
-
-      [ -n "$SIMULATION_SPEC"  ] && ARGS+=(--simulation-spec  "$SIMULATION_SPEC")
-      [ -n "$EXECUTION_RECIPE" ] && ARGS+=(--execution-recipe "$EXECUTION_RECIPE")
-      [ -n "$CONTEXT_SPEC"     ] && ARGS+=(--context-spec     "$CONTEXT_SPEC")
-      [ -n "$ARTIFACT_URI"     ] && ARGS+=(--artifact-uri     "$ARTIFACT_URI")
-      [ -n "$ARTIFACT_DIGEST"  ] && ARGS+=(--artifact-digest  "$ARTIFACT_DIGEST")
-      [ -n "$CAMPAIGN_ID"      ] && ARGS+=(--campaign-id      "$CAMPAIGN_ID")
-      [ -n "$WORK_ITEM"        ] && ARGS+=(--work-item        "$WORK_ITEM")
-      [ -n "$SOURCE_KIND"      ] && ARGS+=(--source-kind      "$SOURCE_KIND")
-
-      # Attach GitLab merge request context when available
-      if [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
-        ARGS+=(
-          --mr-iid      "$CI_MERGE_REQUEST_IID"
-          --mr-url      "$CI_PROJECT_URL/-/merge_requests/$CI_MERGE_REQUEST_IID"
-        )
+      # Stable candidate name: mr-<iid> on MR pipelines, else project-<short sha>.
+      NAME="$CANDIDATE_NAME"
+      if [ -z "$NAME" ]; then
+        if [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
+          NAME="mr-$CI_MERGE_REQUEST_IID"
+        else
+          NAME="$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
+        fi
       fi
 
-      [ "$WAIT_FOR_RESULT" = "true" ] && ARGS+=(--wait)
+      ARGS=(
+        campaign add-candidate
+        --id     "$CAMPAIGN_ID"
+        --name   "$NAME"
+        --provider gitlab
+        --repo   "$CI_PROJECT_PATH"
+        --commit "$CI_COMMIT_SHA"
+        --output json
+      )
+      [ -n "$EXECUTION_RECIPE" ] && ARGS+=(--recipe          "$EXECUTION_RECIPE")
+      [ -n "$ARTIFACT_URI"     ] && ARGS+=(--artifact-uri     "$ARTIFACT_URI")
+      [ -n "$ARTIFACT_DIGEST"  ] && ARGS+=(--artifact-digest  "$ARTIFACT_DIGEST")
+      [ -n "$SOURCE_KIND"      ] && ARGS+=(--source-kind      "$SOURCE_KIND")
+      [ -n "${CI_MERGE_REQUEST_IID:-}" ] && ARGS+=(--pr       "$CI_MERGE_REQUEST_IID")
 
-      # Delegate MR status publishing to brotni-cli, keeping the component thin.
-      # The CLI posts an external/commit status back to the merge request.
-      [ "$PUBLISH_STATUS" = "true" ] && ARGS+=(--publish-status)
+      # Register the candidate — token passed via env var, never via CLI argument.
+      RESP="$(BROTNI_API_URL="$BROTNI_API_URL" BROTNI_TOKEN="$BROTNI_TOKEN" brotni "${ARGS[@]}")"
+      echo "$RESP"
 
-      # Submit the candidate — token passed via env var, never via CLI argument
-      BROTNI_TOKEN="$BROTNI_TOKEN" brotni-cli "${ARGS[@]}"
+      # Extract the studio-minted candidate ID without requiring jq.
+      CANDIDATE_ID="$(printf '%s' "$RESP" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//; s/"$//')"
 
       {
-        echo "BROTNI_CANDIDATE_SUBMITTED=true"
-        [ -n "$CAMPAIGN_ID" ] && echo "BROTNI_CAMPAIGN_ID=$CAMPAIGN_ID"
+        echo "BROTNI_CAMPAIGN_ID=$CAMPAIGN_ID"
+        echo "BROTNI_CANDIDATE_ID=$CANDIDATE_ID"
       } >> brotni.env
   artifacts:
     reports:

@@ -1,26 +1,24 @@
-# Example: Submit an OCI image artifact as a Brotni simulation candidate.
+# Example: Register an OCI image artifact as a candidate in a Brotni campaign.
 #
 # Prerequisites:
-#   - BROTNI_API_URL: set as a CI/CD variable
-#   - BROTNI_TOKEN:   set as a masked/protected CI/CD variable
+#   - BROTNI_API_URL:     set as a CI/CD variable
+#   - BROTNI_TOKEN:       set as a masked/protected CI/CD variable
+#   - BROTNI_CAMPAIGN_ID: the campaign to register candidates with
 #   - A container registry accessible from the runner
 #
-# This example builds and pushes a Docker image, then submits it with its digest
-# to the Brotni simulation workflow for artifact-based simulation.
+# This example builds and pushes a Docker image, then registers it (pinned by
+# digest) as a candidate in the campaign.
 
 include:
   - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/submit-candidate@~latest
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
+      campaign_id: "$BROTNI_CAMPAIGN_ID"
       execution_recipe: "simulation/recipe.yaml"
-      context_spec: "simulation/context.yaml"
       artifact_uri: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
       artifact_digest: "$BROTNI_ARTIFACT_DIGEST"
-      candidate_name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
-      campaign_id: "$BROTNI_CAMPAIGN_ID"
-      publish_status: "true"
+      source_kind: "container_image"
 
 stages:
   - build
@@ -39,13 +37,13 @@ build-image:
   script:
     - docker build -t "$IMAGE_TAG" .
     - docker push "$IMAGE_TAG"
-    # Capture the image digest for use in the simulation submission
+    # Capture the image digest so the candidate is pinned to an immutable artifact
     - DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_TAG" | cut -d@ -f2)
     - echo "BROTNI_ARTIFACT_DIGEST=$DIGEST" >> build.env
   artifacts:
     reports:
       dotenv: build.env
 
-# The submit-candidate component job runs in .pre with the digest from build.env.
-# Ensure the submit-candidate job needs the build job, or set BROTNI_ARTIFACT_DIGEST
-# as a project-level CI/CD variable if the digest is known in advance.
+# The submit-candidate job runs in .pre with the digest from build.env.
+# Ensure submit-candidate needs the build job, or set BROTNI_ARTIFACT_DIGEST as a
+# project-level CI/CD variable if the digest is known in advance.

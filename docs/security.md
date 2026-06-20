@@ -26,14 +26,14 @@ Checklist:
 
 ## Least-privilege access
 
-The component only requires the following GitLab CI/CD scopes:
+The component talks only to the Brotni API (authenticated with `BROTNI_TOKEN`)
+via `brotni-cli`. It uses the predefined GitLab CI variables (project path,
+commit SHA, MR IID) that are already available to the job, so it needs **no
+additional GitLab API scopes** of its own.
 
-| Scope | Reason |
-|-------|--------|
-| `read_api` | To read merge request metadata when `publish_status` is enabled |
-| `write_api` (optional) | Only if the component posts MR status notes |
-
-Avoid granting broader project or group access tokens to `BROTNI_TOKEN` unless your Brotni API requires them.
+`BROTNI_TOKEN` should be scoped to the minimum the Brotni API requires (typically
+permission to register candidates in a campaign). Avoid granting broad GitLab
+project or group access tokens to it.
 
 ---
 

@@ -1,22 +1,21 @@
-# Example: Submit a GitLab merge request commit as a Brotni simulation candidate.
+# Example: Register a GitLab merge request as a candidate in a Brotni campaign.
 #
 # Prerequisites:
-#   - BROTNI_API_URL: set as a CI/CD variable (group or project level)
-#   - BROTNI_TOKEN:   set as a masked/protected CI/CD variable
+#   - BROTNI_API_URL:     set as a CI/CD variable (group or project level)
+#   - BROTNI_TOKEN:       set as a masked/protected CI/CD variable
+#   - BROTNI_CAMPAIGN_ID: the campaign to register candidates with (create it
+#                         first, e.g. with `brotni campaign create`)
 #
 # How to use:
-#   Copy this file to your project as .gitlab-ci.yml or merge it with your existing pipeline.
+#   Copy this file to your project as .gitlab-ci.yml or merge it with your pipeline.
 
 include:
   - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/submit-candidate@~latest
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
-      execution_recipe: "simulation/recipe.yaml"
-      candidate_name: "$CI_PROJECT_NAME-mr-$CI_MERGE_REQUEST_IID"
       campaign_id: "$BROTNI_CAMPAIGN_ID"
-      publish_status: "true"
+      execution_recipe: "simulation/recipe.yaml"
 
 stages:
   - build
@@ -28,9 +27,6 @@ build:
   image: alpine:latest
   script:
     - echo "Build your project here"
-  artifacts:
-    paths:
-      - build/
 
 test:
   stage: test
@@ -39,5 +35,5 @@ test:
   script:
     - echo "Run your tests here"
 
-# The submit-candidate component job runs automatically in .pre
-# and submits the current commit to the Brotni simulation workflow.
+# The submit-candidate job runs automatically in .pre and registers the current
+# MR commit as a candidate (idempotently, keyed by mr-<iid>) in the campaign.

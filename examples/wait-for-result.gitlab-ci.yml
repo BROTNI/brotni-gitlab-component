@@ -1,33 +1,30 @@
-# Example: Submit a candidate and wait for the simulation result in the same pipeline.
+# Example: Register a candidate and report the campaign decision in one pipeline.
 #
 # Prerequisites:
-#   - BROTNI_API_URL:          set as a CI/CD variable
-#   - BROTNI_TOKEN:            set as a masked/protected CI/CD variable
-#   - BROTNI_SIMULATION_JOB_ID is populated by the submit-candidate component job
-#     via its dotenv artifact (brotni.env).
+#   - BROTNI_API_URL:     set as a CI/CD variable
+#   - BROTNI_TOKEN:       set as a masked/protected CI/CD variable
+#   - BROTNI_CAMPAIGN_ID: the campaign to register candidates with
 #
 # This example uses both components:
-#   1. submit-candidate — submits the MR to the Brotni workflow
-#   2. wait-for-result  — polls until simulation is complete, then exposes results
+#   1. submit-candidate — registers the MR as a candidate (runs in .pre)
+#   2. wait-for-result  — best-effort report of the campaign decision (runs in .post)
+#
+# Note: results are populated once the studio has scored the candidates; the
+# decision report is non-blocking and may be empty in the same pipeline run.
 
 include:
   - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/submit-candidate@~latest
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_spec: "simulation/spec.yaml"
-      execution_recipe: "simulation/recipe.yaml"
-      candidate_name: "$CI_PROJECT_NAME-$CI_COMMIT_SHORT_SHA"
       campaign_id: "$BROTNI_CAMPAIGN_ID"
-      publish_status: "true"
+      execution_recipe: "simulation/recipe.yaml"
 
   - component: $CI_SERVER_FQDN/brotni/brotni-gitlab-component/wait-for-result@~latest
     inputs:
       brotni_api_url: "$BROTNI_API_URL"
       brotni_token_variable: "BROTNI_TOKEN"
-      simulation_job_id: "$BROTNI_SIMULATION_JOB_ID"
-      poll_interval_seconds: "30"
-      timeout_minutes: "90"
+      campaign_id: "$BROTNI_CAMPAIGN_ID"
 
 stages:
   - build
@@ -46,20 +43,15 @@ test:
   script:
     - echo "Run tests here"
 
-# After all pipeline stages, in .post:
-# - wait-for-result polls the Brotni API for simulation completion.
-# - On success, BROTNI_STATUS, BROTNI_SCORE, and BROTNI_REPORT_URL are
-#   available as dotenv artifacts for any subsequent jobs that need them.
-
-report-simulation:
+# After all stages, in .post, wait-for-result prints the current campaign
+# decision and exposes BROTNI_CAMPAIGN_ID for downstream jobs.
+report-campaign:
   stage: .post
   image: alpine:latest
   needs:
     - job: wait-for-result
       artifacts: true
   script:
-    - echo "Simulation status:  $BROTNI_STATUS"
-    - echo "Simulation score:   $BROTNI_SCORE"
-    - echo "Simulation report:  $BROTNI_REPORT_URL"
+    - echo "Campaign: $BROTNI_CAMPAIGN_ID"
   rules:
     - when: always
